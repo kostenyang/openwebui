@@ -1,0 +1,2 @@
+# Place vcf-mcp.pem here.
+# scp root@10.0.0.65:/opt/vcf-mcp/cert.pem ./vcf-mcp.pem

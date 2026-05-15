@@ -13,5 +13,29 @@ services:
       # - OPENAI_API_BASE_URL=https://api.openai.com/v1
       # - OPENAI_API_KEY=sk-...
 
+  # MCP → OpenAPI proxy. 把 MCP server 包成 Open WebUI 能吃的 REST。
+  # 詳見 README §7。
+  mcpo:
+    image: ghcr.io/open-webui/mcpo:main
+    container_name: mcpo
+    restart: always
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./mcpo/config.json:/app/config.json:ro
+      - ./mcpo/certs/vcf-mcp.pem:/certs/vcf-mcp.pem:ro
+    environment:
+      - SSL_CERT_FILE=/certs/vcf-mcp.pem
+      - REQUESTS_CA_BUNDLE=/certs/vcf-mcp.pem
+    command:
+      - "--host"
+      - "0.0.0.0"
+      - "--port"
+      - "8000"
+      - "--api-key"
+      - "openwebui-mcpo-secret"
+      - "--config"
+      - "/app/config.json"
+
 volumes:
   open-webui:

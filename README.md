@@ -220,7 +220,144 @@ docker image prune -f
 
 ---
 
-## 7. 常見問題
+## 7. (進階)接 MCP Server — 用 mcpo 當 OpenAPI 代理
+
+> **背景**:Open WebUI 的 Tools 只吃 OpenAPI(REST),不直接講 MCP 協定。
+> 解法是 [`mcpo`](https://github.com/open-webui/mcpo) — 把任何 MCP server 包成 OpenAPI HTTP server,Open WebUI 像呼叫一般工具一樣呼叫它。
+>
+> ```
+> [Open WebUI] ──HTTP/OpenAPI──▶ [mcpo] ──MCP/SSE──▶ [VCF MCP Server]
+>     :3000                       :8000              10.0.0.65:7000
+> ```
+
+### 7.1 上游 MCP server 資訊(本 lab)
+
+| | |
+| --- | --- |
+| Host | `10.0.0.65` (mcp-server) |
+| Endpoint | `https://10.0.0.65:7000/sse` |
+| Transport | SSE (Server-Sent Events) |
+| TLS | 自簽憑證(CN=10.0.0.65,2036 過期) |
+| 認證 | `Authorization: Bearer <token>`,token 在 `/opt/vcf-mcp/keys.json` |
+| systemd unit | `vcf-mcp.service` |
+
+> ⚠️ **安全提醒**:本 lab 的 MCP server 持有 vCenter / SDDC Manager / ESXi root 密碼。MCP API token 等於對全 lab 的高權限,**只應在內網流通**。本 README 雖然 commit 了 token,但前提是這個 lab 不對外暴露 — 若你 fork 此設定到 production,務必把 token 改用 env var / Docker secret,不要塞進 git。
+
+### 7.2 在 10.0.0.64 加上 mcpo
+
+把上游的自簽 cert 拉下來放到 mcpo 容器讀得到的位置:
+
+```bash
+mkdir -p /opt/open-webui/mcpo/certs
+scp root@10.0.0.65:/opt/vcf-mcp/cert.pem /opt/open-webui/mcpo/certs/vcf-mcp.pem
+```
+
+寫 mcpo 設定 `/opt/open-webui/mcpo/config.json`:
+
+```json
+{
+  "mcpServers": {
+    "vcf-lab": {
+      "type": "sse",
+      "url": "https://10.0.0.65:7000/sse",
+      "headers": {
+        "Authorization": "Bearer ILnx5ohq04A92X01Sk9rw9Uvjk8f0Nbd02a8wuIFZbw"
+      }
+    }
+  }
+}
+```
+
+```bash
+chmod 600 /opt/open-webui/mcpo/config.json
+```
+
+把 mcpo 加進 `/opt/open-webui/docker-compose.yml`:
+
+```yaml
+services:
+  open-webui:
+    # ... (同 §3)
+
+  mcpo:
+    image: ghcr.io/open-webui/mcpo:main
+    container_name: mcpo
+    restart: always
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./mcpo/config.json:/app/config.json:ro
+      - ./mcpo/certs/vcf-mcp.pem:/certs/vcf-mcp.pem:ro
+    environment:
+      # 讓 httpx 信任自簽 cert
+      - SSL_CERT_FILE=/certs/vcf-mcp.pem
+      - REQUESTS_CA_BUNDLE=/certs/vcf-mcp.pem
+    command:
+      - "--host"
+      - "0.0.0.0"
+      - "--port"
+      - "8000"
+      - "--api-key"
+      - "openwebui-mcpo-secret"   # Open WebUI 端要送這個 Bearer
+      - "--config"
+      - "/app/config.json"
+```
+
+啟動:
+
+```bash
+cd /opt/open-webui
+docker compose pull mcpo
+docker compose up -d
+docker logs mcpo --tail 20
+```
+
+成功 log 應該長這樣(沒看到 `Failed to connect`):
+
+```
+INFO - Successfully connected to MCP server: vcf-lab
+INFO - Application startup complete.
+INFO - Uvicorn running on http://0.0.0.0:8000
+```
+
+### 7.3 驗證 mcpo
+
+```bash
+# Tool 列表(應該是滿的)
+curl -s -H 'Authorization: Bearer openwebui-mcpo-secret' \
+  http://10.0.0.64:8000/vcf-lab/openapi.json | jq '.paths | keys'
+
+# 直接呼叫一個 tool(等同 MCP 的 tools/call)
+curl -s -X POST -H 'Authorization: Bearer openwebui-mcpo-secret' \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"10.0.0.65","count":2}' \
+  http://10.0.0.64:8000/vcf-lab/ping_host
+```
+
+### 7.4 在 Open WebUI 介面加 Tool
+
+1. 登入 <http://10.0.0.64:3000/> 用 admin
+2. 右上頭像 → **Settings** → **Tools**(或 **Admin Panel → Settings → Tools**)
+3. 點 **+** 新增:
+   - **URL**: `http://10.0.0.64:8000/vcf-lab`
+   - **API Key Type**: `Bearer`
+   - **API Key**: `openwebui-mcpo-secret`
+4. 儲存後,Open WebUI 會自動 fetch `openapi.json`,把每個 MCP tool 變成可用工具
+5. 開新 chat → 在輸入框旁邊的 **+ Tool** 按鈕勾選 `vcf-lab` → 開問
+
+### 7.5 常見坑
+
+| 症狀 | 原因 | 解法 |
+| --- | --- | --- |
+| mcpo log: `ConnectTimeout` | 上游 MCP 沒回 TLS handshake | 檢查 `vcf-mcp` service 是否在跑、SSE 連線有沒有累積太多 |
+| mcpo log: `SSL certificate verify failed` | 沒掛 cert / SSL_CERT_FILE 沒設 | 檢查 §7.2 的 volume 跟 env |
+| `/openapi.json` paths 是 `{}` | mcpo 啟動時 upstream 失敗,沒拉到 tool schema | `docker compose restart mcpo` 重抓 |
+| Open WebUI 加 Tool 401 | API Key 沒填或填錯 | 跟 mcpo `--api-key` 對齊 |
+| 上游 MCP 接了一陣子變慢 | SSE 連線累積(FastMCP 已知問題) | `systemctl restart vcf-mcp` 清掉 |
+
+---
+
+## 8. 常見問題
 
 | 症狀 | 原因 | 解法 |
 | --- | --- | --- |
@@ -238,7 +375,10 @@ docker image prune -f
 .
 ├── README.md                         本檔
 ├── install.sh                        裝 Docker + 起 Open WebUI 的一鍵腳本
-├── docker-compose.yml                Open WebUI compose 定義
+├── docker-compose.yml                Open WebUI + mcpo compose 定義
+├── mcpo/
+│   ├── config.json                   mcpo upstream MCP servers 設定
+│   └── certs/                        放上游自簽 cert(本機 scp 過來)
 ├── netplan/
 │   └── 00-installer-config.yaml      靜態 IP 範本
 └── .gitignore
