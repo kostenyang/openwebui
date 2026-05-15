@@ -243,7 +243,46 @@ docker image prune -f
 
 > ⚠️ **安全提醒**:本 lab 的 MCP server 持有 vCenter / SDDC Manager / ESXi root 密碼。MCP API token 等於對全 lab 的高權限,**只應在內網流通**。本 README 雖然 commit 了 token,但前提是這個 lab 不對外暴露 — 若你 fork 此設定到 production,務必把 token 改用 env var / Docker secret,不要塞進 git。
 
-### 7.2 在 10.0.0.64 加上 mcpo
+### 7.2 上游 cert 要有 SAN(踩雷預警)
+
+> ⚠️ Python ≥ 3.10 / httpx 已經**完全不認 CN-only 的 cert**,只看 `subjectAltName`。
+> 上游 vcf-mcp 預設產的 cert 如果只有 `CN=10.0.0.65`,mcpo 會吐:
+> `[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: IP address mismatch`
+>
+> 處理:在 10.0.0.65 重生有 SAN 的 cert。
+
+```bash
+ssh root@10.0.0.65 'bash -s' <<'REMOTE'
+cd /opt/vcf-mcp
+cp cert.pem cert.pem.bak.$(date +%s)
+cp key.pem  key.pem.bak.$(date +%s)
+cat > /tmp/san.cnf <<EOF
+[req]
+distinguished_name = dn
+x509_extensions    = v3
+prompt             = no
+[dn]
+CN = 10.0.0.65
+O  = VCF-Lab
+[v3]
+basicConstraints = critical, CA:FALSE
+keyUsage         = digitalSignature, keyEncipherment
+extendedKeyUsage = serverAuth
+subjectAltName   = @san
+[san]
+IP.1  = 10.0.0.65
+IP.2  = 127.0.0.1
+DNS.1 = mcp-server
+DNS.2 = localhost
+EOF
+openssl req -x509 -nodes -newkey rsa:4096 -days 3650 \
+  -keyout key.pem -out cert.pem -config /tmp/san.cnf -extensions v3
+chmod 600 key.pem; chmod 644 cert.pem
+systemctl restart vcf-mcp
+REMOTE
+```
+
+### 7.3 在 10.0.0.64 加上 mcpo
 
 把上游的自簽 cert 拉下來放到 mcpo 容器讀得到的位置:
 
@@ -320,7 +359,7 @@ INFO - Application startup complete.
 INFO - Uvicorn running on http://0.0.0.0:8000
 ```
 
-### 7.3 驗證 mcpo
+### 7.4 驗證 mcpo
 
 ```bash
 # Tool 列表(應該是滿的)
@@ -334,7 +373,7 @@ curl -s -X POST -H 'Authorization: Bearer openwebui-mcpo-secret' \
   http://10.0.0.64:8000/vcf-lab/ping_host
 ```
 
-### 7.4 在 Open WebUI 介面加 Tool
+### 7.5 在 Open WebUI 介面加 Tool
 
 1. 登入 <http://10.0.0.64:3000/> 用 admin
 2. 右上頭像 → **Settings** → **Tools**(或 **Admin Panel → Settings → Tools**)
@@ -345,12 +384,13 @@ curl -s -X POST -H 'Authorization: Bearer openwebui-mcpo-secret' \
 4. 儲存後,Open WebUI 會自動 fetch `openapi.json`,把每個 MCP tool 變成可用工具
 5. 開新 chat → 在輸入框旁邊的 **+ Tool** 按鈕勾選 `vcf-lab` → 開問
 
-### 7.5 常見坑
+### 7.6 常見坑
 
 | 症狀 | 原因 | 解法 |
 | --- | --- | --- |
 | mcpo log: `ConnectTimeout` | 上游 MCP 沒回 TLS handshake | 檢查 `vcf-mcp` service 是否在跑、SSE 連線有沒有累積太多 |
-| mcpo log: `SSL certificate verify failed` | 沒掛 cert / SSL_CERT_FILE 沒設 | 檢查 §7.2 的 volume 跟 env |
+| mcpo log: `IP address mismatch, certificate is not valid for ...` | 上游 cert 只有 CN 沒 SAN | 跑 §7.2 重生 cert |
+| mcpo log: `SSL certificate verify failed` | 沒掛 cert / SSL_CERT_FILE 沒設 | 檢查 §7.3 的 volume 跟 env |
 | `/openapi.json` paths 是 `{}` | mcpo 啟動時 upstream 失敗,沒拉到 tool schema | `docker compose restart mcpo` 重抓 |
 | Open WebUI 加 Tool 401 | API Key 沒填或填錯 | 跟 mcpo `--api-key` 對齊 |
 | 上游 MCP 接了一陣子變慢 | SSE 連線累積(FastMCP 已知問題) | `systemctl restart vcf-mcp` 清掉 |
