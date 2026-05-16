@@ -17,7 +17,22 @@
 
 ---
 
-## TL;DR(已經有 IP/hostname 設好的情況)
+## TL;DR — 兩條路
+
+### A. 客戶端 / 新環境 一鍵部署
+
+連網路、Docker、Open WebUI、mcpo、LLM key、Tool Server 註冊全包,讀 `deploy/config.env`:
+
+```bash
+git clone https://github.com/kostenyang/openwebui.git
+cd openwebui/deploy
+cp config.env.example config.env && vim config.env
+sudo bash install.sh
+```
+
+詳見 [`deploy/README.md`](deploy/README.md)。
+
+### B. 已經有 box,只想裝 Open WebUI
 
 ```bash
 git clone https://github.com/kostenyang/openwebui.git /opt/open-webui-setup
@@ -26,7 +41,7 @@ sudo bash install.sh
 # 完成,瀏覽器開 http://<本機IP>:3000/
 ```
 
-從零開始的完整版往下看。
+從零開始,**逐步理解每個動作做什麼**,往下看。
 
 ---
 
@@ -525,10 +540,15 @@ docker restart open-webui
 ├── README.md                         本檔
 ├── install.sh                        裝 Docker + 起 Open WebUI 的一鍵腳本
 ├── docker-compose.yml                Open WebUI + mcpo compose 定義
+├── deploy/                           客戶端一鍵部署包(scp 整包過去用)
+│   ├── README.md                       └ deploy 詳細說明
+│   ├── config.env.example              └ 範本(scp 後拷成 config.env)
+│   ├── install.sh                      └ 主入口
+│   └── lib/                            └ 階段 scripts
 ├── functions/
 │   └── anthropic_pipe.py             Open WebUI Function:Claude provider(§8.3)
 ├── mcpo/
-│   ├── config.json                   mcpo upstream MCP servers 設定
+│   ├── config.json                   mcpo upstream MCP servers 設定(目前 lab 用)
 │   └── certs/                        放上游自簽 cert(本機 scp 過來)
 ├── netplan/
 │   └── 00-installer-config.yaml      靜態 IP 範本
