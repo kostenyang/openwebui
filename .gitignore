@@ -2,3 +2,4 @@
 .DS_Store
 *.tgz
 backups/
+.tmp_*
