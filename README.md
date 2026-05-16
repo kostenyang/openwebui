@@ -397,7 +397,116 @@ curl -s -X POST -H 'Authorization: Bearer openwebui-mcpo-secret' \
 
 ---
 
-## 8. 常見問題
+## 8. 接 LLM Provider:OpenAI / Gemini / Claude
+
+| Provider | 接法 | 哪裡填 |
+| --- | --- | --- |
+| **OpenAI** | 原生 OpenAI-compatible | Admin Panel → Settings → **Connections** |
+| **Google Gemini** | Google 的 OpenAI-compatible 端點 | Admin Panel → Settings → **Connections** |
+| **Anthropic Claude** | 走 Function/Pipe(API 格式不同) | Admin Panel → **Functions** |
+
+### 8.1 OpenAI
+
+1. 拿 key:<https://platform.openai.com/api-keys>
+2. **Admin Panel → Settings → Connections → OpenAI API**
+3. 點 **+ Add Connection**:
+   - **URL**: `https://api.openai.com/v1`
+   - **Key**: `sk-proj-...`
+   - **Prefix ID**(可選): `openai`
+4. 按 **🔄** 拉模型列表,選你要露出來的(`gpt-4o`、`gpt-5` 等)
+5. Save。新 chat 的 model 下拉就會出現
+
+### 8.2 Google Gemini
+
+> Google 有官方 OpenAI-compatible 端點,Open WebUI 當成另一個 OpenAI 接就好,**不用 Function**。
+
+1. 拿 key:<https://aistudio.google.com/apikey>
+2. **Admin Panel → Settings → Connections → OpenAI API → + Add Connection**:
+   - **URL**: `https://generativelanguage.googleapis.com/v1beta/openai`
+   - **Key**: `AIza...`
+   - **Prefix ID**: `gemini`
+3. **🔄** 拉模型,會看到 `gemini-2.5-pro`、`gemini-2.5-flash` 等
+
+> ⚠️ 若拉不到模型列表,在連線設定打開 **Model IDs** 手動填:`gemini-2.5-pro,gemini-2.5-flash,gemini-2.0-flash`
+
+### 8.3 Anthropic Claude
+
+Claude 的 `/v1/messages` 跟 OpenAI 的 `/v1/chat/completions` 格式差很多(尤其 system message、streaming SSE 結構),所以走 Function。
+
+#### A. UI 安裝(一般做法)
+
+1. 拿 key:<https://console.anthropic.com/settings/keys>
+2. **Admin Panel → Functions → + Create new function**(右上角加號)
+3. **Function ID**: `anthropic`,**Name**: `Anthropic`
+4. 把 [`functions/anthropic_pipe.py`](functions/anthropic_pipe.py) **整份內容**貼進去 → **Save**
+5. 列表回到 Functions,**Anthropic** 那一列:
+   - 右邊小齒輪 ⚙ → 把 `ANTHROPIC_API_KEY` 填進去 → **Save**
+   - 旁邊的開關打開(enabled)
+6. 開新 chat,model 下拉會多三個:
+   - `anthropic.claude-opus-4-7`
+   - `anthropic.claude-sonnet-4-6`
+   - `anthropic.claude-haiku-4-5`
+
+要加更多 model id?改 `pipes()` 那個 list,Save 就好。
+
+#### B. 進階:直接灌進 DB(自動化或 CI 用)
+
+跳過 UI,直接把 Function row 寫進 SQLite,然後 restart container:
+
+```bash
+# 1. 把 functions/anthropic_pipe.py 複製進容器
+docker cp functions/anthropic_pipe.py open-webui:/tmp/anthropic_pipe.py
+
+# 2. 跑 install script(把 KEY 換成你的)
+docker exec -e API_KEY="sk-ant-api03-xxxx" open-webui python3 <<'EOF'
+import sqlite3, json, time, os
+USER_ID = '<admin-user-id>'   # SELECT id FROM user WHERE role='admin'
+API_KEY = os.environ['API_KEY']
+content = open('/tmp/anthropic_pipe.py', encoding='utf-8').read()
+valves = json.dumps({
+    'ANTHROPIC_API_KEY': API_KEY,
+    'ANTHROPIC_API_BASE': 'https://api.anthropic.com/v1',
+    'MAX_TOKENS': 8192,
+})
+meta = json.dumps({'description': 'Anthropic Claude provider', 'manifest': {}})
+now = int(time.time())
+db = sqlite3.connect('/app/backend/data/webui.db')
+db.execute('DELETE FROM function WHERE id=?', ('anthropic',))
+db.execute(
+    'INSERT INTO function (id, user_id, name, type, content, meta, '
+    'created_at, updated_at, valves, is_active, is_global) '
+    'VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+    ('anthropic', USER_ID, 'Anthropic', 'pipe', content, meta, now, now, valves, 1, 1)
+)
+db.commit()
+EOF
+
+# 3. 重啟才會載入新 Function
+docker restart open-webui
+```
+
+> Admin user_id 怎麼找:
+> ```bash
+> docker exec open-webui python3 -c "import sqlite3; \
+>   print([r for r in sqlite3.connect('/app/backend/data/webui.db').execute(\"SELECT id, email, role FROM user WHERE role='admin'\")])"
+> ```
+
+### 8.4 模型管理小撇步
+
+| 想做的事 | 怎麼做 |
+| --- | --- |
+| 把某些模型藏起來不要露給一般使用者 | Admin Panel → **Models** → 該 model → 設 **Hide** |
+| 設預設模型 | Admin Panel → Settings → **General → Default Models** |
+| 替模型自訂顯示名 / 描述 / 預設 system prompt | Admin Panel → **Models** → **Edit** |
+| 不同使用者看到不同的 model | Admin Panel → **Models** → 給該 model 設 **Visibility**(public/private/groups) |
+
+### 8.5 API Keys 的存放
+
+填進去的 key 都加密存在 docker volume `open-webui_open-webui` 的 SQLite DB(`webui.db`)裡,**不會出現在 docker-compose.yml 或 env**。要備份就照 §5。
+
+---
+
+## 9. 常見問題
 
 | 症狀 | 原因 | 解法 |
 | --- | --- | --- |
@@ -416,6 +525,8 @@ curl -s -X POST -H 'Authorization: Bearer openwebui-mcpo-secret' \
 ├── README.md                         本檔
 ├── install.sh                        裝 Docker + 起 Open WebUI 的一鍵腳本
 ├── docker-compose.yml                Open WebUI + mcpo compose 定義
+├── functions/
+│   └── anthropic_pipe.py             Open WebUI Function:Claude provider(§8.3)
 ├── mcpo/
 │   ├── config.json                   mcpo upstream MCP servers 設定
 │   └── certs/                        放上游自簽 cert(本機 scp 過來)
