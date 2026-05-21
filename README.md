@@ -410,6 +410,53 @@ curl -s -X POST -H 'Authorization: Bearer openwebui-mcpo-secret' \
 | Open WebUI 加 Tool 401 | API Key 沒填或填錯 | 跟 mcpo `--api-key` 對齊 |
 | 上游 MCP 接了一陣子變慢 | SSE 連線累積(FastMCP 已知問題) | `systemctl restart vcf-mcp` 清掉 |
 
+### 7.7 加第二個 MCP — mssql-mcp(走 Open WebUI 直接接,不走中央 mcpo)
+
+> **重點**:`mssql-mcp` 服務本身已經在 [`mssql-mcp` repo](https://github.com/kostenyang/mcp/tree/main/mssql-mcp) 的容器裡跑了 mcpo,**它的輸出就是 OpenAPI**——已經跟 10.0.0.64 上這台 mcpo 同一層,不是它的 upstream。要塞給 mcpo 還得加 stdio→SSE bridge,工程不對稱。
+>
+> 改成讓 Open WebUI **同時接兩個 OpenAPI tool server**(`mcpo` + `mssql-mcp`)反而最自然——OW 原本就支援多來源 tool。
+
+對照圖:
+
+```
+Open WebUI
+   ├──→ http://10.0.0.64:8000/vcf-lab/   (mcpo,本機)
+   └──→ http://10.0.0.68:8000/mssql/     (mssql-mcp,單獨 VM)
+```
+
+#### 先檢查 mssql-mcp 起來了
+
+```bash
+# 從 openwebui box 對 mssql-mcp box 確認:
+KEY=mssql-mcp-secret-XXX     # 從 mssql-mcp:/opt/mssql-mcp/.env 抄
+curl -s -X POST http://10.0.0.68:8000/mssql/list_table \
+     -H "Authorization: Bearer $KEY" \
+     -H 'Content-Type: application/json' \
+     -d '{"parameters":[]}' | head -c 200
+```
+
+回到 table list 就 OK。回 `Connection refused` → 對方容器沒起、或 firewall。
+
+#### 在 Open WebUI 介面加 Tool
+
+1. 登入 <http://10.0.0.64:3000/> 用 admin
+2. **Admin Panel → Settings → Tools → +**
+3. 第二筆 connection 填:
+   - **URL**: `http://10.0.0.68:8000/mssql`
+   - **API Key Type**: `Bearer`
+   - **API Key**: `mssql-mcp-secret-XXX`(同上,從 `/opt/mssql-mcp/.env`)
+4. 儲存。Open WebUI 會 fetch `http://10.0.0.68:8000/mssql/openapi.json`,把 `list_table`、`read_data` 等 8 個 tool 自動展出來
+5. 開新 chat → **+ Tool** 就能勾選 `mssql`(跟 `vcf-lab` 並列)
+
+#### 為什麼不像 vcf-lab 走 mcpo?
+
+- `mcpo` 設計上**只吃 MCP**(stdio / SSE / streamable-http),**輸出**才是 OpenAPI。
+- `mssql-mcp` 容器內部已經是 `mcpo + node-stdio` 的組合,**對外是 OpenAPI**——跟 10.0.0.64 這台 mcpo 是同一層的東西。
+- 要強行併進中央 mcpo,得在 10.0.0.68 另起一個 stdio→SSE bridge(例如 `mcp-proxy`),讓 mcpo 能用 SSE upstream 吃它。可行但多一層維運成本。
+- Open WebUI 本身支援 **多個 Tool server**,直接掛兩條 OpenAPI 就好,各服務獨立失敗、各自升級。
+
+> 推論:**MCP server 自己包 mcpo(像 mssql-mcp 這種)→ Open WebUI 直接接。MCP server 只有 stdio/SSE 原生輸出(像 vcf-mcp)→ 由中央 mcpo 包一層再給 OW。** 兩種模式並存沒問題,選順手的。
+
 ---
 
 ## 8. 接 LLM Provider:OpenAI / Gemini / Claude
