@@ -41,7 +41,9 @@ sudo bash install.sh --skip-mcp        # 不註冊 Tool Server
 | **2. docker** | 裝 Docker CE + compose plugin | `--skip-docker` 或已裝 |
 | **3. openwebui** | 起 Open WebUI(+ mcpo 若啟用)docker compose | `--skip-openwebui` |
 | **4. llm** | 把 OpenAI/Gemini key 寫進 config DB,Anthropic 灌 Function | `--skip-llm` 或所有 key 都空 |
-| **5. mcp-tool** | 把 mcpo 註冊成 admin 的 Tool Server | `--skip-mcp` 或 `MCPO_ENABLED=false` |
+| **5. mcp-tool** | 把 mcpo + `EXTRA_TOOL_SERVERS` 全部註冊成 admin 的 Tool Server | `--skip-mcp` 或 `MCPO_ENABLED=false`(且 EXTRA_TOOL_SERVERS 空) |
+
+> 階段 5 細節(怎麼接第 N 個 MCP / 兩種接法的差別)看 [`lib/MCP-TOOLS.md`](lib/MCP-TOOLS.md)。
 
 > ⚠️ 階段 4 / 5 需要 admin user 存在。**第一次部署順序**:
 > 1. 跑 `install.sh --skip-llm --skip-mcp`(階段 1-3,Open WebUI 起來)
@@ -84,6 +86,19 @@ UPSTREAM_MCP_CERT_FILE="/root/customer-mcp.pem"   # 自簽 cert
 
 OPENAI_API_KEY="sk-..."
 ```
+
+### 情境 C:Open WebUI + 多個 MCP(本機 mcpo + 別台已是 OpenAPI 的)
+
+```bash
+# 情境 B 那組 mcpo 設定不變 (接 vcf-lab via SSE),然後加上:
+
+EXTRA_TOOL_SERVERS=(
+  "mssql|http://10.0.0.68:8000/mssql|mssql-mcp-secret-XXX"
+  # "billing|http://10.0.0.71:8000/billing|another-bearer"
+)
+```
+
+> 「成品 OpenAPI」MCP(像 mssql-mcp 容器自帶 mcpo)放 `EXTRA_TOOL_SERVERS`,跟本機 mcpo 同層、不串接。判斷標準 + 兩種接法的圖解見 [`lib/MCP-TOOLS.md`](lib/MCP-TOOLS.md)。
 
 ## 注意事項 / 踩雷
 
